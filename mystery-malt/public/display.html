@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mystery Malt &mdash; Big Screen</title>
+<link rel="stylesheet" href="/styles.css">
+<style>
+  body { font-size: 1.15rem; }
+  .wrap.wide { max-width: 1200px; }
+  .big-title { font-size: 3.2rem; text-align: center; letter-spacing: .04em; text-transform: uppercase; color: var(--cream); margin: 10px 0 4px; }
+  .big-sub { font-size: 1.6rem; text-align: center; color: var(--gold); margin-bottom: 26px; }
+  .huge-stat { font-size: 2.6rem; color: var(--amber-bright); font-weight: bold; text-align: center; }
+  .medal-row { display:flex; align-items:center; gap:18px; padding:16px 22px; margin-bottom:12px; border-radius:14px; background:var(--bg-2); border:1px solid var(--line); }
+  .medal-row .medal { font-size: 2.4rem; }
+  .medal-row .name { font-size: 1.5rem; flex:1; }
+  .medal-row .pts { font-size: 1.6rem; color: var(--amber-bright); font-weight:bold; }
+</style>
+</head>
+<body>
+<div class="wrap wide" id="app">
+  <div class="brand">
+    <div class="kicker">Thomson Bros &middot; Mystery Malt Series No.5</div>
+  </div>
+  <div id="content"></div>
+</div>
+
+<script>
+const KEY_STORAGE = 'mysterymalt_hostkey';
+const qs = new URLSearchParams(location.search);
+let HOST_KEY = qs.get('hostKey') || localStorage.getItem(KEY_STORAGE) || '';
+if (HOST_KEY) localStorage.setItem(KEY_STORAGE, HOST_KEY);
+
+function el(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }
+function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+function stars(n) { return '&#9733;'.repeat(Math.round(n / 2)) + '&#9734;'.repeat(5 - Math.round(n / 2)); }
+
+async function api(path) {
+  const res = await fetch(path, { headers: { 'x-host-key': HOST_KEY } });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(body.error || 'Request failed'), { status: res.status });
+  return body;
+}
+
+function renderKeyGate() {
+  document.getElementById('content').innerHTML = '';
+  const card = el(`
+    <div class="card center">
+      <h2 style="margin-top:0;">Host Key Required</h2>
+      <input type="text" id="keyInput" placeholder="Host key">
+      <button id="goBtn" style="margin-top:12px;">Connect</button>
+    </div>
+  `);
+  document.getElementById('content').appendChild(card);
+  card.querySelector('#goBtn').addEventListener('click', () => {
+    HOST_KEY = card.querySelector('#keyInput').value.trim();
+    localStorage.setItem(KEY_STORAGE, HOST_KEY);
+    tick();
+  });
+}
+
+function barChart(counts, total) {
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) return '<div class="helper">No responses yet.</div>';
+  return entries.map(([label, count]) => {
+    const pct = total ? Math.round((count / total) * 100) : 0;
+    return `
+      <div class="bar-row">
+        <div class="bar-label"><span>${escapeHtml(label)}</span><span>${count} (${pct}%)</span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${pct}%;"></div></div>
+      </div>
+    `;
+  }).join('');
+}
+
+function medal(i) { return ['🥇', '🥈', '🥉'][i] || `${i + 1}.`; }
+
+function renderLeaderboard(board, showAll) {
+  const top = board.slice(0, 3);
+  const rest = board.slice(3, 10);
+  return `
+    <div class="card">
+      <div class="big-sub" style="margin-bottom:14px;">Leaderboard</div>
+      ${top.map((b, i) => `
+        <div class="medal-row">
+          <div class="medal">${medal(i)}</div>
+          <div class="name">${escapeHtml(b.name)}</div>
+          <div class="pts">${b.totalScore} pts</div>
+        </div>
+      `).join('')}
+      ${showAll && rest.length ? `
+        <div class="table-scroll" style="margin-top:10px;">
+          <table>
+            <tbody>
+              ${rest.map((b, i) => `<tr><td>${i + 4}.</td><td>${escapeHtml(b.name)}</td><td>${b.totalScore} pts</td></tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderWelcome(data) {
+  return `
+    <div class="card center" style="padding:60px 30px;">
+      <div class="big-title">Welcome</div>
+      <div class="big-sub">${data.participantCount} taster${data.participantCount === 1 ? '' : 's'} have joined so far</div>
+      <div class="helper">Scan the QR code or visit the Start Here link to join before Whisky #1 opens.</div>
+    </div>
+  `;
+}
+
+function renderOpenRound(round, gs) {
+  return `
+    <div class="card center" style="padding:40px 30px;">
+      <div class="big-title">Whisky #${round}</div>
+      <div class="big-sub">Taste. Rate. Guess. Submit.</div>
+      <div class="huge-stat">${gs.responses}</div>
+      <div class="helper">responses received so far</div>
+    </div>
+  `;
+}
+
+function renderGroupResults(round, gs) {
+  return `
+    <div class="card">
+      <div class="big-title" style="font-size:2.4rem;">Whisky #${round}</div>
+      <div class="big-sub">Group Results</div>
+      <div class="grid-3">
+        <div class="stat-tile"><div class="v">${stars(gs.avgNose)}</div><div class="k">Nose ${gs.avgNose.toFixed(1)}/10</div></div>
+        <div class="stat-tile"><div class="v">${stars(gs.avgPalate)}</div><div class="k">Palate ${gs.avgPalate.toFixed(1)}/10</div></div>
+        <div class="stat-tile"><div class="v">${stars(gs.avgFinish)}</div><div class="k">Finish ${gs.avgFinish.toFixed(1)}/10</div></div>
+      </div>
+      <div class="stat-tile" style="margin-top:10px;"><div class="v">${stars(gs.avgOverall)}</div><div class="k">Overall ${gs.avgOverall.toFixed(1)}/10 &middot; ${gs.responses} responses</div></div>
+      <hr class="divider">
+      <h3>Distillery Guesses</h3>
+      ${barChart(gs.distilleryCounts, gs.responses)}
+      <h3>Age Guesses</h3>
+      ${barChart(gs.ageCounts, gs.responses)}
+    </div>
+  `;
+}
+
+function renderReveal(round, gs) {
+  const perfect = gs.perfectNames.length
+    ? gs.perfectNames.map(escapeHtml).join(', ')
+    : 'No perfect guesses this round.';
+  return `
+    <div class="card center">
+      <div class="big-sub">Whisky #${round} Revealed</div>
+      <div class="big-title" style="font-size:2.6rem;">${escapeHtml(gs.answer.whisky)}</div>
+      <div class="big-sub" style="font-size:1.2rem;">Distillery: ${escapeHtml(gs.answer.distillery)} &middot; Age: ${gs.answer.age} Years</div>
+      <div class="grid-3" style="margin-top:20px;">
+        <div class="stat-tile"><div class="v">${gs.correctDistilleryPct}%</div><div class="k">Correct Distillery</div></div>
+        <div class="stat-tile"><div class="v">${gs.correctAgePct}%</div><div class="k">Correct Age</div></div>
+        <div class="stat-tile"><div class="v">${gs.correctBothPct}%</div><div class="k">Correct Both</div></div>
+      </div>
+      <hr class="divider">
+      <h3>Perfect Guesses</h3>
+      <div>${perfect}</div>
+    </div>
+  `;
+}
+
+function renderFinal(data) {
+  const board = data.leaderboard;
+  const s = data.summary;
+  const podium = board.slice(0, 3);
+  const labels = ['Winner', 'Second Place', 'Third Place'];
+  return `
+    <div class="card center">
+      <div class="big-title">Final Results</div>
+    </div>
+    ${podium.map((b, i) => `
+      <div class="card center">
+        <div class="big-sub" style="margin-bottom:4px;">${medal(i)} ${labels[i]}</div>
+        <div class="big-title" style="font-size:2.2rem;">${escapeHtml(b.name)}</div>
+        <div class="huge-stat">${b.totalScore} / 18</div>
+      </div>
+    `).join('')}
+    ${s ? `
+      <div class="card">
+        <h3 style="margin-top:0;">Event Highlights</h3>
+        <div class="grid-2">
+          <div class="stat-tile"><div class="v">${s.participantCount}</div><div class="k">Participants</div></div>
+          <div class="stat-tile"><div class="v">${s.totalPerfectGuesses}</div><div class="k">Total Perfect Guesses</div></div>
+          <div class="stat-tile"><div class="v">${escapeHtml(s.highestRatedWhisky.whisky)}</div><div class="k">Highest Rated (${s.highestRatedWhisky.avgOverall.toFixed(1)}/10)</div></div>
+          <div class="stat-tile"><div class="v">${escapeHtml(s.lowestRatedWhisky.whisky)}</div><div class="k">Lowest Rated (${s.lowestRatedWhisky.avgOverall.toFixed(1)}/10)</div></div>
+          <div class="stat-tile"><div class="v">${escapeHtml(s.mostCorrectlyIdentified.whisky)}</div><div class="k">Most Correctly Identified</div></div>
+          <div class="stat-tile"><div class="v">${escapeHtml(s.leastCorrectlyIdentified.whisky)}</div><div class="k">Least Correctly Identified</div></div>
+        </div>
+      </div>
+    ` : ''}
+  `;
+}
+
+async function tick() {
+  try {
+    const data = await api('/api/display/state');
+    const content = document.getElementById('content');
+    let html = '';
+    if (data.round === 0) {
+      html = renderWelcome(data);
+    } else if (data.round >= 1 && data.round <= 6) {
+      const gs = data.groupStats;
+      if (data.roundStatus === 'LOCKED' || data.roundStatus === 'OPEN') {
+        html = renderOpenRound(data.round, gs);
+      } else if (data.roundStatus === 'CLOSED') {
+        html = renderGroupResults(data.round, gs);
+      } else if (data.roundStatus === 'REVEALED') {
+        html = renderReveal(data.round, gs) + renderLeaderboard(data.leaderboard, false);
+      }
+    } else if (data.round === 7) {
+      html = renderFinal(data);
+    }
+    content.innerHTML = html;
+  } catch (e) {
+    if (e.status === 401) renderKeyGate();
+  }
+}
+
+if (HOST_KEY) { tick(); setInterval(tick, 6000); }
+else renderKeyGate();
+</script>
+</body>
+</html>

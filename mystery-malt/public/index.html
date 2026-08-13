@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Mystery Malt Tasting</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wrap" id="app">
+  <div class="brand">
+    <div class="kicker">Thomson Bros</div>
+    <h1>Mystery Malt Series No.5</h1>
+    <h2>Blind Whisky Tasting</h2>
+  </div>
+  <div id="content"></div>
+  <div class="footer-note">Friday Whisky Mafia &middot; keep this page open all evening</div>
+</div>
+
+<script>
+const STATE = { token: null, name: null, data: null, pollHandle: null, activeModalRound: null };
+const TOKEN_KEY = 'mysterymalt_token';
+const NAME_KEY = 'mysterymalt_name';
+
+const STATUS_ICON = { LOCKED: '🔒', OPEN: '🥃', CLOSED: '⏳', REVEALED: '🎯' };
+
+function el(html) {
+  const t = document.createElement('template');
+  t.innerHTML = html.trim();
+  return t.content.firstElementChild;
+}
+
+async function api(path, opts = {}) {
+  const headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+  if (STATE.token) headers['x-participant-token'] = STATE.token;
+  const res = await fetch(path, Object.assign({}, opts, { headers }));
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(body.error || 'Request failed'), { body, status: res.status });
+  return body;
+}
+
+function saveSession(token, name) {
+  localStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem(NAME_KEY, name);
+  STATE.token = token;
+  STATE.name = name;
+}
+
+function clearSession() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(NAME_KEY);
+  STATE.token = null;
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
+function renderRegistration(errorMsg) {
+  const content = document.getElementById('content');
+  content.innerHTML = '';
+  const card = el(`
+    <div class="card center">
+      <h2 style="margin-top:0;color:var(--cream);">Welcome to the Tasting</h2>
+      ${errorMsg ? `<div class="error-banner">${errorMsg}</div>` : ''}
+      <div style="text-align:left;">
+        <label for="nameInput">What's your name?</label>
+        <input type="text" id="nameInput" placeholder="e.g. Leigh" maxlength="60" autocomplete="name">
+      </div>
+      <button id="joinBtn" style="margin-top:16px;">Join Tasting</button>
+    </div>
+  `);
+  content.appendChild(card);
+  const input = card.querySelector('#nameInput');
+  const btn = card.querySelector('#joinBtn');
+  const submit = async () => {
+    const name = input.value.trim();
+    if (!name) { input.focus(); return; }
+    btn.disabled = true;
+    try {
+      const res = await api('/api/register', { method: 'POST', body: JSON.stringify({ name }) });
+      saveSession(res.token, res.name);
+      await bootDashboard();
+    } catch (e) {
+      renderRegistration(e.message);
+    }
+  };
+  btn.addEventListener('click', submit);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  input.focus();
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
+
+function statusLabel(round, entry) {
+  if (entry.status === 'LOCKED') return { icon: '🔒', text: 'Locked', cls: 'locked' };
+  if (entry.status === 'OPEN') {
+    if (entry.submitted) return { icon: '⏳', text: 'Awaiting Reveal', cls: 'wait' };
+    return { icon: '🥃', text: 'Now Tasting — Rate & Guess', cls: 'now' };
+  }
+  if (entry.status === 'CLOSED') return { icon: '⏳', text: 'Awaiting Reveal', cls: 'wait' };
+  if (entry.status === 'REVEALED') return { icon: '🎯', text: `Revealed — ${entry.score} / 3 Points`, cls: 'done' };
+  return { icon: '', text: '', cls: '' };
+}
+
+function renderDashboard() {
+  const d = STATE.data;
+  const content = document.getElementById('content');
+  content.innerHTML = '';
+
+  if (d.finished) {
+    return renderFinal();
+  }
+
+  const hero = el(`
+    <div class="card score-hero">
+      <div class="label">Welcome, ${escapeHtml(d.name)}</div>
+      <div class="score">${d.totalScore} / ${d.maxPossible}</div>
+      <div class="sub">${d.currentRound >= 1 && d.currentRound <= 6 ? `Current Round: Whisky #${d.currentRound}` : 'Registration open — waiting for Whisky #1'}</div>
+      ${d.showPersonalPosition && d.position ? `<div class="position">Current Position: ${ordinal(d.position)}</div>` : ''}
+    </div>
+  `);
+  content.appendChild(hero);
+
+  for (let r = 1; r <= 6; r++) {
+    const entry = d.rounds[r];
+    const s = statusLabel(r, entry);
+    const card = el(`
+      <div class="round-card ${entry.status === 'OPEN' && !entry.submitted ? 'now-tasting clickable' : ''} ${entry.status === 'REVEALED' ? 'revealed clickable' : ''}">
+        <div class="rc-left">
+          <div class="rc-title">Whisky #${r}</div>
+          <div class="rc-status ${s.cls}">${s.text}</div>
+        </div>
+        <div class="rc-badge">${s.icon}</div>
+      </div>
+    `);
+    if (entry.status === 'OPEN' && !entry.submitted) {
+      card.addEventListener('click', () => openTastingModal(r));
+    } else if (entry.status === 'REVEALED') {
+      card.addEventListener('click', () => openResultModal(r, entry));
+    }
+    content.appendChild(card);
+  }
+}
+
+function ordinal(n) {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// ---------------------------------------------------------------------------
+// Tasting submission modal
+// ---------------------------------------------------------------------------
+
+let distilleryCache = null, ageCache = null;
+
+async function openTastingModal(round) {
+  if (!distilleryCache) distilleryCache = (await api('/api/distilleries')).distilleries;
+  if (!ageCache) ageCache = (await api('/api/ages')).ages;
+
+  const backdrop = el(`<div class="modal-backdrop"></div>`);
+  const sheet = el(`
+    <div class="modal-sheet">
+      <h2 style="margin-top:0;">Whisky #${round}</h2>
+      <div id="modalError"></div>
+      <form id="tastingForm">
+        ${sliderField('nose', 'Nose', 5)}
+        ${sliderField('palate', 'Palate', 5)}
+        ${sliderField('finish', 'Finish', 5)}
+        ${sliderField('overall', 'Overall Rating', 5)}
+        <hr class="divider">
+        <label for="distillery">Which distillery do you think produced this whisky?</label>
+        <select id="distillery" required>
+          <option value="">Select distillery&hellip;</option>
+          ${distilleryCache.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}
+        </select>
+        <label for="age">Age Guess</label>
+        <select id="age" required>
+          <option value="">Select age&hellip;</option>
+          ${ageCache.map((a) => `<option value="${a}">${a} Years</option>`).join('')}
+        </select>
+        <label for="notes">Tasting Notes / Comments (optional)</label>
+        <textarea id="notes" rows="3" maxlength="500" placeholder="Anything you noticed&hellip;"></textarea>
+        <button type="submit" style="margin-top:18px;">Submit</button>
+        <button type="button" class="secondary" id="cancelBtn" style="margin-top:10px;">Cancel</button>
+      </form>
+    </div>
+  `);
+  backdrop.appendChild(sheet);
+  document.body.appendChild(backdrop);
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) backdrop.remove(); });
+  sheet.querySelector('#cancelBtn').addEventListener('click', () => backdrop.remove());
+
+  sheet.querySelectorAll('input[type=range]').forEach((r) => {
+    const out = sheet.querySelector(`#${r.id}Value`);
+    r.addEventListener('input', () => { out.textContent = r.value; });
+  });
+
+  sheet.querySelector('#tastingForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const errBox = sheet.querySelector('#modalError');
+    errBox.innerHTML = '';
+    const payload = {
+      nose: Number(sheet.querySelector('#nose').value),
+      palate: Number(sheet.querySelector('#palate').value),
+      finish: Number(sheet.querySelector('#finish').value),
+      overall: Number(sheet.querySelector('#overall').value),
+      distilleryGuess: sheet.querySelector('#distillery').value,
+      ageGuess: sheet.querySelector('#age').value,
+      notes: sheet.querySelector('#notes').value,
+    };
+    if (!payload.distilleryGuess || !payload.ageGuess) {
+      errBox.innerHTML = `<div class="error-banner">Please choose both a distillery and an age guess.</div>`;
+      return;
+    }
+    const submitBtn = sheet.querySelector('button[type=submit]');
+    submitBtn.disabled = true;
+    try {
+      await api(`/api/submit/${round}`, { method: 'POST', body: JSON.stringify(payload) });
+      backdrop.remove();
+      showToast('Your response has been recorded. Enjoy the dram while everyone finishes.');
+      await refreshState();
+    } catch (err) {
+      errBox.innerHTML = `<div class="error-banner">${err.message}</div>`;
+      submitBtn.disabled = false;
+    }
+  });
+}
+
+function sliderField(id, label, def) {
+  return `
+    <div class="field-group">
+      <label for="${id}">${label} <span style="opacity:.6;">(1&ndash;10)</span></label>
+      <div class="slider-row">
+        <input type="range" min="1" max="10" value="${def}" id="${id}">
+        <div class="slider-value" id="${id}Value">${def}</div>
+      </div>
+    </div>
+  `;
+}
+
+function showToast(msg) {
+  const t = el(`<div class="card center" style="position:fixed;left:16px;right:16px;bottom:16px;max-width:520px;margin:0 auto;z-index:60;">${escapeHtml(msg)}</div>`);
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 4200);
+}
+
+// ---------------------------------------------------------------------------
+// Result modal (post-reveal)
+// ---------------------------------------------------------------------------
+
+function openResultModal(round, entry) {
+  const backdrop = el(`<div class="modal-backdrop"></div>`);
+  const sheet = el(`
+    <div class="modal-sheet">
+      <h2 style="margin-top:0;">Whisky #${round} &mdash; Your Result</h2>
+      <div class="result-row"><span>Your Distillery Guess</span><strong>${escapeHtml(entry.yourDistilleryGuess || '&mdash;')}</strong></div>
+      <div class="result-row"><span>Correct Distillery</span><strong>${escapeHtml(entry.correctDistillery)}</strong></div>
+      <div class="result-row"><span></span><span class="${entry.distilleryCorrect ? 'ok' : 'no'}">${entry.distilleryCorrect ? '✓ Correct' : '✗ Incorrect'}</span></div>
+      <hr class="divider">
+      <div class="result-row"><span>Your Age Guess</span><strong>${entry.yourAgeGuess ?? '&mdash;'} Years</strong></div>
+      <div class="result-row"><span>Correct Age</span><strong>${entry.correctAge} Years</strong></div>
+      <div class="result-row"><span></span><span class="${entry.ageCorrect ? 'ok' : 'no'}">${entry.ageCorrect ? '✓ Correct' : '✗ Incorrect'}</span></div>
+      <hr class="divider">
+      ${entry.distilleryCorrect && entry.ageCorrect ? `<div class="result-row"><span>Bonus</span><strong class="ok">+1 (both correct)</strong></div>` : ''}
+      <div class="score-hero" style="padding-top:10px;">
+        <div class="label">Round Score</div>
+        <div class="score" style="font-size:2.2rem;">${entry.score} / 3</div>
+      </div>
+      <button class="secondary" id="closeResult">Close</button>
+    </div>
+  `);
+  backdrop.appendChild(sheet);
+  document.body.appendChild(backdrop);
+  backdrop.addEventListener('click', (e) => { if (e.target === backdrop) backdrop.remove(); });
+  sheet.querySelector('#closeResult').addEventListener('click', () => backdrop.remove());
+}
+
+// ---------------------------------------------------------------------------
+// Final summary
+// ---------------------------------------------------------------------------
+
+function renderFinal() {
+  const d = STATE.data;
+  const content = document.getElementById('content');
+  content.innerHTML = '';
+  content.appendChild(el(`
+    <div class="card center">
+      <div class="label" style="text-transform:uppercase;letter-spacing:.14em;color:var(--cream-dim);font-size:.8rem;">Tasting Complete</div>
+      <h2 style="color:var(--cream);margin:6px 0;">Your Final Score</h2>
+      <div class="score" style="font-size:3rem;color:var(--amber-bright);">${d.totalScore} / ${d.maxPossible}</div>
+      <div class="grid-3" style="margin-top:16px;">
+        <div class="stat-tile"><div class="v">${d.perfectGuesses}</div><div class="k">Perfect Guesses</div></div>
+        <div class="stat-tile"><div class="v">${d.correctDistilleries} / 6</div><div class="k">Correct Distilleries</div></div>
+        <div class="stat-tile"><div class="v">${d.correctAges} / 6</div><div class="k">Correct Ages</div></div>
+      </div>
+      ${d.showPersonalPosition && d.position ? `<div class="position" style="margin-top:14px;">Final Position: ${ordinal(d.position)}</div>` : ''}
+    </div>
+  `));
+
+  const rows = [1, 2, 3, 4, 5, 6].map((r) => {
+    const e = d.rounds[r];
+    const score = e.score !== undefined ? `${e.score} / 3` : '&mdash;';
+    return `<tr><td>Whisky #${r}</td><td>${score}</td></tr>`;
+  }).join('');
+  const table = el(`
+    <div class="card">
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Whisky</th><th>Score</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="helper" style="margin-top:10px;">Tap a revealed whisky card below to revisit your guesses.</div>
+    </div>
+  `);
+  content.appendChild(table);
+
+  for (let r = 1; r <= 6; r++) {
+    const entry = d.rounds[r];
+    if (entry.status !== 'REVEALED') continue;
+    const card = el(`
+      <div class="round-card revealed clickable">
+        <div class="rc-left">
+          <div class="rc-title">Whisky #${r}</div>
+          <div class="rc-status done">Revealed</div>
+        </div>
+        <div class="rc-score">${entry.score} / 3</div>
+      </div>
+    `);
+    card.addEventListener('click', () => openResultModal(r, entry));
+    content.appendChild(card);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Boot / polling
+// ---------------------------------------------------------------------------
+
+async function refreshState() {
+  try {
+    const data = await api('/api/state');
+    STATE.data = data;
+    renderDashboard();
+  } catch (e) {
+    if (e.status === 401) {
+      clearSession();
+      renderRegistration();
+    }
+  }
+}
+
+async function bootDashboard() {
+  await refreshState();
+  if (STATE.pollHandle) clearInterval(STATE.pollHandle);
+  STATE.pollHandle = setInterval(refreshState, 15000);
+}
+
+(function init() {
+  const token = localStorage.getItem(TOKEN_KEY);
+  const name = localStorage.getItem(NAME_KEY);
+  if (token) {
+    STATE.token = token;
+    STATE.name = name;
+    bootDashboard();
+  } else {
+    renderRegistration();
+  }
+})();
+</script>
+</body>
+</html>
