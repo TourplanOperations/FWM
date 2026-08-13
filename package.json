@@ -1,0 +1,14 @@
+{
+  "name": "mystery-malt-tasting",
+  "version": "1.0.0",
+  "description": "Thomson Bros Mystery Malt Series No.5 - live blind whisky tasting & scoring system",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "exceljs": "^4.4.0",
+    "qrcode": "^1.5.3"
+  }
+}

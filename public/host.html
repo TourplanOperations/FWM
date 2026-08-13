@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mystery Malt &mdash; Host Control Panel</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wrap wide" id="app">
+  <div class="brand">
+    <div class="kicker">Host Only</div>
+    <h1>Mystery Malt Control Panel</h1>
+  </div>
+  <div id="content"></div>
+</div>
+
+<script>
+const KEY_STORAGE = 'mysterymalt_hostkey';
+let HOST_KEY = localStorage.getItem(KEY_STORAGE) || '';
+let pollHandle = null;
+let lastOverview = null;
+
+async function api(path, opts = {}) {
+  const headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+  headers['x-host-key'] = HOST_KEY;
+  const res = await fetch(path, Object.assign({}, opts, { headers }));
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(body.error || 'Request failed'), { status: res.status });
+  return body;
+}
+
+function el(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }
+function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+
+function renderKeyGate(errorMsg) {
+  document.getElementById('content').innerHTML = '';
+  const card = el(`
+    <div class="card center">
+      <h2 style="margin-top:0;">Host Key Required</h2>
+      ${errorMsg ? `<div class="error-banner">${errorMsg}</div>` : ''}
+      <input type="text" id="keyInput" placeholder="Host key">
+      <button id="goBtn" style="margin-top:12px;">Enter Control Panel</button>
+    </div>
+  `);
+  document.getElementById('content').appendChild(card);
+  card.querySelector('#goBtn').addEventListener('click', async () => {
+    HOST_KEY = card.querySelector('#keyInput').value.trim();
+    try {
+      await api('/api/host/overview');
+      localStorage.setItem(KEY_STORAGE, HOST_KEY);
+      boot();
+    } catch (e) {
+      renderKeyGate('Incorrect host key.');
+    }
+  });
+}
+
+const ROUND_STATUSES = ['LOCKED', 'OPEN', 'CLOSED', 'REVEALED'];
+
+function statusPillClass(status) {
+  if (status === 'OPEN') return 'open';
+  if (status === 'REVEALED') return 'revealed';
+  if (status === 'CLOSED') return 'closed';
+  return '';
+}
+
+async function setRoundStatus(round, status) {
+  await api('/api/host/round', { method: 'POST', body: JSON.stringify({ round, status }) });
+  await refresh();
+}
+
+async function setCurrentRound(cr) {
+  await api('/api/host/round', { method: 'POST', body: JSON.stringify({ currentRound: cr }) });
+  await refresh();
+}
+
+function renderDashboard(data) {
+  lastOverview = data;
+  const content = document.getElementById('content');
+  content.innerHTML = '';
+
+  // --- Primary flow control ---
+  const cr = data.event.currentRound;
+  const roundLabel = cr === 0 ? 'Registration' : cr === 7 ? 'Finished' : `Whisky #${cr}`;
+  const currentStatus = (cr >= 1 && cr <= 6) ? data.rounds[cr].status : null;
+
+  const flow = el(`
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+        <div>
+          <div class="pill">Current Round</div>
+          <h2 style="margin:6px 0 0;">${roundLabel}</h2>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button class="secondary" id="prevRoundBtn" style="width:auto;padding:12px 18px;">&larr; Prev</button>
+          <button class="secondary" id="nextRoundBtn" style="width:auto;padding:12px 18px;">Next &rarr;</button>
+        </div>
+      </div>
+      ${currentStatus ? `
+        <div class="helper" style="margin:14px 0 8px;">Round ${cr} status: <span class="pill ${statusPillClass(currentStatus)}">${currentStatus}</span></div>
+        <div class="grid-3" style="grid-template-columns:repeat(4,1fr);">
+          ${ROUND_STATUSES.map((s) => `<button data-status="${s}" class="round-status-btn ${s === currentStatus ? '' : 'secondary'}" style="padding:12px 8px;font-size:.8rem;">${s}</button>`).join('')}
+        </div>
+      ` : `<div class="helper" style="margin-top:14px;">Set Current Round to 1&ndash;6 to control a tasting round.</div>`}
+    </div>
+  `);
+  content.appendChild(flow);
+  flow.querySelector('#prevRoundBtn').addEventListener('click', () => setCurrentRound(Math.max(0, cr - 1)));
+  flow.querySelector('#nextRoundBtn').addEventListener('click', () => setCurrentRound(Math.min(7, cr + 1)));
+  flow.querySelectorAll('.round-status-btn').forEach((b) => {
+    b.addEventListener('click', () => setRoundStatus(cr, b.dataset.status));
+  });
+
+  // --- Event summary stats ---
+  const summaryTiles = el(`
+    <div class="grid-3">
+      <div class="stat-tile"><div class="v">${data.participants.length}</div><div class="k">Participants</div></div>
+      <div class="stat-tile"><div class="v">${data.duplicateLog.length}</div><div class="k">Duplicate Attempts</div></div>
+      <div class="stat-tile"><div class="v">${data.event.showPersonalPosition ? 'ON' : 'OFF'}</div><div class="k">Personal Position</div></div>
+    </div>
+  `);
+  content.appendChild(summaryTiles);
+
+  // --- Settings ---
+  const settings = el(`
+    <div class="card">
+      <h3 style="margin-top:0;">Settings</h3>
+      <button class="secondary" id="togglePosBtn">${data.event.showPersonalPosition ? 'Disable' : 'Enable'} Personal Position on Participant Dashboards</button>
+      <a href="/api/host/export.xlsx?hostKey=${encodeURIComponent(HOST_KEY)}" style="text-decoration:none;">
+        <button class="secondary" style="margin-top:10px;">Download Excel Export</button>
+      </a>
+      <button class="secondary" id="openDisplayBtn" style="margin-top:10px;">Open Big-Screen Display</button>
+    </div>
+  `);
+  content.appendChild(settings);
+  settings.querySelector('#togglePosBtn').addEventListener('click', async () => {
+    await api('/api/host/toggle-position', { method: 'POST', body: JSON.stringify({ enabled: !data.event.showPersonalPosition }) });
+    await refresh();
+  });
+  settings.querySelector('#openDisplayBtn').addEventListener('click', () => {
+    window.open('/display?hostKey=' + encodeURIComponent(HOST_KEY), '_blank');
+  });
+
+  // --- QR / link tools ---
+  const qr = el(`
+    <div class="card">
+      <h3 style="margin-top:0;">Start Here QR Code</h3>
+      <div class="helper">Enter the permanent public URL of this dashboard once deployed, then generate the QR code for the opening slide, table cards, and printed sheets.</div>
+      <input type="text" id="qrUrl" placeholder="https://your-deployed-url.example.com/" value="${location.origin}/">
+      <button id="genQrBtn" style="margin-top:8px;">Generate QR Code</button>
+      <div id="qrOut" class="center" style="margin-top:12px;"></div>
+    </div>
+  `);
+  content.appendChild(qr);
+  qr.querySelector('#genQrBtn').addEventListener('click', () => {
+    const url = qr.querySelector('#qrUrl').value.trim();
+    if (!url) return;
+    const src = `/api/host/qr?hostKey=${encodeURIComponent(HOST_KEY)}&url=${encodeURIComponent(url)}`;
+    qr.querySelector('#qrOut').innerHTML = `<img src="${src}" style="width:220px;border-radius:10px;border:1px solid var(--line);"><div class="helper" style="margin-top:6px;">${escapeHtml(url)}</div>`;
+  });
+
+  // --- Per-round table (advanced) ---
+  const perRoundRows = [1, 2, 3, 4, 5, 6].map((r) => {
+    const rs = data.roundStats[r];
+    return `<tr>
+      <td>Whisky #${r}</td>
+      <td><span class="pill ${statusPillClass(data.rounds[r].status)}">${data.rounds[r].status}</span></td>
+      <td>${rs.responses}</td>
+      <td>${rs.avgOverall.toFixed(1)}</td>
+      <td>${rs.revealed ? escapeHtml(rs.answer.whisky) : '&mdash;'}</td>
+      <td>${rs.revealed ? rs.correctBothPct + '%' : '&mdash;'}</td>
+    </tr>`;
+  }).join('');
+  content.appendChild(el(`
+    <div class="card">
+      <h3 style="margin-top:0;">All Rounds</h3>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Round</th><th>Status</th><th>Responses</th><th>Avg Overall</th><th>Answer</th><th>% Both Correct</th></tr></thead>
+          <tbody>${perRoundRows}</tbody>
+        </table>
+      </div>
+    </div>
+  `));
+
+  // --- Participants ---
+  const partRows = data.participants
+    .sort((a, b) => b.totalScore - a.totalScore)
+    .map((p) => `<tr>
+      <td>${escapeHtml(p.name)}</td>
+      <td>${p.submitted.map((s) => s ? '✓' : '&middot;').join(' ')}</td>
+      <td>${p.totalScore}</td>
+      <td>${p.perfectGuesses}</td>
+    </tr>`).join('');
+  content.appendChild(el(`
+    <div class="card">
+      <h3 style="margin-top:0;">Participants (${data.participants.length})</h3>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Name</th><th>W1&ndash;W6 Submitted</th><th>Score</th><th>Perfect</th></tr></thead>
+          <tbody>${partRows || '<tr><td colspan="4">No one has registered yet.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+  `));
+
+  // --- Duplicate log ---
+  if (data.duplicateLog.length) {
+    const dupRows = data.duplicateLog.map((d) => {
+      const p = data.participants.find((pp) => pp.id === d.participantId);
+      return `<tr><td>${escapeHtml(p ? p.name : d.participantId)}</td><td>${d.round}</td><td>${new Date(d.attemptedAt).toLocaleTimeString()}</td></tr>`;
+    }).join('');
+    content.appendChild(el(`
+      <div class="card">
+        <h3 style="margin-top:0;">Duplicate Submission Attempts</h3>
+        <div class="helper">Only the first valid submission is scored per participant per whisky. These attempts were preserved for audit but did not overwrite the scored response.</div>
+        <div class="table-scroll">
+          <table><thead><tr><th>Participant</th><th>Round</th><th>Attempted At</th></tr></thead><tbody>${dupRows}</tbody></table>
+        </div>
+      </div>
+    `));
+  }
+
+  // --- Danger zone ---
+  content.appendChild(el(`
+    <div class="card">
+      <h3 style="margin-top:0;color:var(--bad);">Danger Zone</h3>
+      <button class="danger" id="resetBtn">Reset Entire Event</button>
+      <div class="helper">Wipes all participants, submissions and round state. Use only for a dry run before the real event.</div>
+    </div>
+  `));
+  content.querySelector('#resetBtn').addEventListener('click', async () => {
+    if (!confirm('This permanently deletes all participants and responses. Type OK to confirm.')) return;
+    await api('/api/host/reset', { method: 'POST', body: JSON.stringify({ confirm: 'RESET' }) });
+    await refresh();
+  });
+}
+
+async function refresh() {
+  try {
+    const data = await api('/api/host/overview');
+    renderDashboard(data);
+  } catch (e) {
+    if (e.status === 401) {
+      localStorage.removeItem(KEY_STORAGE);
+      renderKeyGate();
+    }
+  }
+}
+
+function boot() {
+  refresh();
+  if (pollHandle) clearInterval(pollHandle);
+  pollHandle = setInterval(refresh, 8000);
+}
+
+(function init() {
+  if (HOST_KEY) boot();
+  else renderKeyGate();
+})();
+</script>
+</body>
+</html>
