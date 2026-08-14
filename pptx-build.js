@@ -22,7 +22,7 @@ const QR_PATH = path.join(__dirname, 'assets', 'qr-placeholder.png');
 // *** REPLACE BEFORE THE EVENT ***
 // Set this to your real deployed Start Here URL, regenerate assets/qr-placeholder.png
 // to point at the same URL (see DEPLOYMENT.md), then rerun `node pptx-build.js`.
-const DISPLAY_URL = 'mysterymalt.example';
+const DISPLAY_URL = 'thompsonbrostasting.onrender.com';
 
 const pres = new pptxgen();
 pres.layout = 'LAYOUT_WIDE'; // 13.3" x 7.5"
